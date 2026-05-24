@@ -990,11 +990,15 @@ fn is_mounted(path: &Path) -> bool {
 }
 
 fn is_device_mounted(device: &str) -> bool {
+  let canonical = fs::canonicalize(device).ok();
+  let canonical_str = canonical.as_deref().and_then(|p| p.to_str());
   if let Ok(file) = File::open("/proc/mounts") {
     let reader = BufReader::new(file);
     for line in reader.lines().map_while(Result::ok) {
-      let parts: Vec<&str> = line.split_whitespace().collect();
-      if parts.len() >= 2 && parts[0] == device {
+      let parts = line.split_whitespace().collect::<Vec<&str>>();
+      if parts.len() >= 2
+        && (parts[0] == device || Some(parts[0]) == canonical_str)
+      {
         return true;
       }
     }
@@ -1964,58 +1968,65 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
   Ok(())
 }
 
-fn copy_initrd_secrets(extra_utils: Option<&Path>) -> Result<()> {
-  if let Some(utils) = extra_utils {
-    let extra_secrets = utils.join("secrets");
-    if extra_secrets.is_dir() {
-      log_message("Linking extraUtils secrets...", true);
-      for entry in fs::read_dir(&extra_secrets)? {
-        let entry = entry?;
-        let source = entry.path();
-        let rel = source.strip_prefix(&extra_secrets)?;
-        let dest = Path::new("/").join(rel);
-        if let Some(parent) = dest.parent() {
-          fs::create_dir_all(parent)?;
-        }
+fn link_extra_utils_secrets(extra_utils: Option<&Path>) -> Result<()> {
+  let Some(utils) = extra_utils else {
+    return Ok(());
+  };
+  let extra_secrets = utils.join("secrets");
+  if !extra_secrets.is_dir() {
+    return Ok(());
+  }
+  log_message("Linking extraUtils secrets...", true);
+  for entry in fs::read_dir(&extra_secrets)? {
+    let entry = entry?;
+    let source = entry.path();
+    let rel = source.strip_prefix(&extra_secrets)?;
+    let dest = Path::new("/").join(rel);
+    if let Some(parent) = dest.parent() {
+      fs::create_dir_all(parent)?;
+    }
 
-        // Symlink into the initrd namespace so tools running during stage 1
-        // (cryptsetup, network helpers, etc.) find them at the
-        // expected absolute paths.
-        if source.is_dir() {
-          symlink_dir_recurse(&source, &dest)?;
-        } else {
-          symlink(&source, &dest).with_context(|| {
-            format!("Failed to symlink {source:?} to {dest:?}")
-          })?;
-        }
-      }
+    // Symlink into the initrd namespace so tools running during stage 1
+    // (cryptsetup, network helpers, etc.) find them at the
+    // expected absolute paths.
+    if source.is_dir() {
+      symlink_dir_recurse(&source, &dest)?;
+    } else {
+      symlink(&source, &dest)
+        .with_context(|| format!("Failed to symlink {source:?} to {dest:?}"))?;
     }
   }
+  Ok(())
+}
 
+// Must run after mount_essential_filesystems so /run is a real tmpfs;
+// /.initrd-secrets entries targeting /run/* would be hidden if copied before
+// the tmpfs mount.
+fn copy_initrd_secrets() -> Result<()> {
   let initrd_secrets = Path::new("/.initrd-secrets");
-  if initrd_secrets.is_dir() {
-    log_message("Copying /.initrd-secrets...", true);
-    for entry in fs::read_dir(initrd_secrets)? {
-      let entry = entry?;
-      let source = entry.path();
-      let rel = source.strip_prefix(initrd_secrets)?;
-      let dest = Path::new("/").join(rel);
-      if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-      }
+  if !initrd_secrets.is_dir() {
+    return Ok(());
+  }
+  log_message("Copying /.initrd-secrets...", true);
+  for entry in fs::read_dir(initrd_secrets)? {
+    let entry = entry?;
+    let source = entry.path();
+    let rel = source.strip_prefix(initrd_secrets)?;
+    let dest = Path::new("/").join(rel);
+    if let Some(parent) = dest.parent() {
+      fs::create_dir_all(parent)?;
+    }
 
-      let meta = entry.metadata()?;
-      if meta.is_dir() {
-        copy_dir_recursive(&source, &dest)?;
-      } else {
-        fs::copy(&source, &dest)
-          .with_context(|| format!("Failed to copy {source:?} to {dest:?}"))?;
-        // Secret files in the initrd must not be world-readable.
-        fs::set_permissions(&dest, Permissions::from_mode(0o600))?;
-      }
+    let meta = entry.metadata()?;
+    if meta.is_dir() {
+      copy_dir_recursive(&source, &dest)?;
+    } else {
+      fs::copy(&source, &dest)
+        .with_context(|| format!("Failed to copy {source:?} to {dest:?}"))?;
+      // Secret files in the initrd must not be world-readable.
+      fs::set_permissions(&dest, Permissions::from_mode(0o600))?;
     }
   }
-
   Ok(())
 }
 
@@ -2268,7 +2279,7 @@ fn switch_root(
   // environment before handing off to /init: the LD_LIBRARY_PATH we set to
   // @extraUtils@/lib for initrd tools (cryptsetup, lvm, etc.) points at a
   // stripped-down libc without libbpf/libseccomp, and letting it leak into
-  // PID 1 breaks systemd's dlopen of those features — which in turn
+  // PID 1 breaks systemd's dlopen of those features, which in turn,
   // disables seccomp sandboxing and the service-spawn PATH logic, so every
   // unit with a relative ExecStart (systemd-tmpfiles, journalctl, bootctl,
   // modprobe, udevadm) fails at boot with status=203/EXEC.
@@ -2534,12 +2545,13 @@ pub fn run(args: &[String]) -> Result<()> {
 
   setup_environment(config.extra_utils.as_deref())
     .context("Failed to set up environment")?;
-  copy_initrd_secrets(config.extra_utils.as_deref())
-    .context("Failed to copy initrd secrets")?;
+  link_extra_utils_secrets(config.extra_utils.as_deref())
+    .context("Failed to link extraUtils secrets")?;
   create_directories().context("Failed to create directories")?;
   create_essential_devices().context("Failed to create essential devices")?;
   mount_essential_filesystems()
     .context("Failed to mount essential filesystems")?;
+  copy_initrd_secrets().context("Failed to copy initrd secrets")?;
   create_essential_files().context("Failed to create essential files")?;
 
   set_host_id(config.set_host_id.as_deref())
