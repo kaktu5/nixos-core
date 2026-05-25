@@ -7,7 +7,7 @@
 <div align="center">
     <a alt="CI" href="https://github.com/sisyphean-group/nixos-core/actions">
         <img
-          src="https://github.com/sisyphean-group/nixos-core/actions/workflows/build.yml/badge.svg"
+          src="https://github.com/sisyphean-group/nixos-core/actions/workflows/rust.yml/badge.svg"
           alt="Build Status"
         />
     </a>
