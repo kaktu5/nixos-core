@@ -537,12 +537,12 @@ in {
         message = "nixos-core supersedes nixos-init, and cannot be used alongside it";
       }
       {
-        assertion = !config.system.etc.overlay.enable;
-        message = "nixos-core cannot be used with system.etc.overlay.enable";
+        assertion = !cfg.components.etcActivation.enable || !config.system.etc.overlay.enable;
+        message = "system.nixos-core.components.etcActivation.enable cannot be used with system.etc.overlay.enable. Disable one of them.";
       }
       {
-        assertion = !config.services.userborn.enable && !config.systemd.sysusers.enable;
-        message = "nixos-core cannot be used with services.userborn.enable or systemd.sysusers.enable";
+        assertion = !cfg.components.userGroupsActivation.enable || (!config.services.userborn.enable && !config.systemd.sysusers.enable);
+        message = "system.nixos-core.components.userGroupsActivation.enable cannot be used with services.userborn.enable or systemd.sysusers.enable. Disable one of them.";
       }
     ];
   };
