@@ -455,8 +455,8 @@ in {
         enable =
           mkEnableOption ""
           // {
-            default = !config.systemd.sysusers.enable;
-            defaultText = literalExpression "!config.systemd.sysusers.enable";
+            default = !config.services.userborn.enable && !config.systemd.sysusers.enable;
+            defaultText = literalExpression "!config.services.userborn.enable && !config.systemd.sysusers.enable";
             description = "Whether to create users and groups with nixos-core";
           };
 
