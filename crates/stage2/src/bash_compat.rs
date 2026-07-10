@@ -662,9 +662,13 @@ fn apply_nix_store_mount_opts(
 fn create_required_directories(
   log_dest: &Option<std::path::PathBuf>,
 ) -> Result<()> {
-  let dirs = ["/etc", "/etc/nixos", "/tmp", "/run/keys"];
+  let dirs: &[&str] = if Path::new("/etc").exists() {
+    &["/tmp", "/run/keys"]
+  } else {
+    &["/etc", "/etc/nixos", "/tmp", "/run/keys"]
+  };
 
-  for dir in &dirs {
+  for dir in dirs {
     log_message(
       log_dest.as_deref(),
       &format!("stage-2-init: creating directory {dir}"),
